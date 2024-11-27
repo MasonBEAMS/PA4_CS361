@@ -19,6 +19,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <pthread.h>
 
 #include "wrappers.h"
 #include "message.h"
@@ -33,7 +34,7 @@ int minimum( int a , int b)
     return ( a <= b ? a : b ) ; 
 }
 
-void subFactory( int factoryID , int myCapacity , int myDuration ) ;
+void subFactory( void * arg ) ;
 
 void factLog( char *str )
 {
@@ -47,13 +48,31 @@ void factLog( char *str )
 int   remainsToMake , // Must be protected by a Mutex
       actuallyMade ;  // Actually manufactured items
 
-int   numActiveFactories = 1 , orderSize ;
-sem_t mutex;
+int   numActiveFactories = 0 , orderSize ;
+// sem_t mutex;
+pthread_mutex_t factoryMutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
 
 int   sd ;      // Server socket descriptor
 struct sockaddr_in  
              srvrSkt,       /* the address of this server   */
              clntSkt;       /* remote client's socket       */
+
+typedef  struct {
+    int id;
+    int dur;
+    int cap;
+}  arg_t ;
+
+typedef struct {
+    int id;
+    int partsMade;
+    int iterations;
+} result_t;
+
+arg_t *threadResults;
+
 
 //------------------------------------------------------------
 //  Handle Ctrl-C or KILL 
@@ -70,7 +89,8 @@ void goodbye(int sig)
     socklen_t alen = sizeof( clntSkt ) ;
     sendto(sd, &byeMsg, sizeof(byeMsg), 0, (SA *)&clntSkt, alen);
     close(sd);
-    Sem_destroy( &mutex         ) ;
+    pthread_mutex_destroy(&mutex);
+    pthread_mutex_destroy(&factoryMutex);
     exit(0);
     //The factory server should capture any signals meant to INTerrupt or TERMinate the server in the proper way.
 
@@ -93,7 +113,6 @@ int main( int argc , char *argv[] )
     fprintf( stdout , "Logged in as user '%s' on %s\n\n" , myUserName ,  ctime( &now)  ) ;
     fflush( stdout ) ;
     int pshared = 1;
-    Sem_init(&mutex, pshared, 1);
 
 	switch (argc) 
 	{
@@ -132,7 +151,7 @@ int main( int argc , char *argv[] )
     srvrSkt.sin_addr.s_addr = htonl(INADDR_ANY);
     srvrSkt.sin_port = htons(port);
 
-    printf("I will attempt to accept orders at port %d and use %d sub-factories.", port, N);
+    printf("I will attempt to accept orders at port %d and use %d sub-factories.\n", port, N);
 
     
     if ( bind( sd, (SA *) & srvrSkt , sizeof(srvrSkt) ) < 0 )
@@ -142,7 +161,14 @@ int main( int argc , char *argv[] )
     inet_ntop( AF_INET, (void *) & srvrSkt.sin_addr.s_addr , ipStr , IPSTRLEN ) ;
     printf( "Bound socket %d to IP %s Port %d\n" , sd , ipStr , ntohs( srvrSkt.sin_port ) );
 
+    pthread_t threadIDs[N];
 
+    // threadIDs = malloc(N * sizeof(pthread_t));
+    threadResults = malloc(N * sizeof(arg_t));
+    if(threadIDs == NULL || threadResults == NULL) {
+        fprintf(stderr, "Failed to allocate memory\n"); 
+        exit(EXIT_FAILURE);  
+    }
 
     int forever = 1;
     while ( forever )
@@ -162,9 +188,9 @@ int main( int argc , char *argv[] )
 
         // missing code goes here
         orderSize = ntohl(msg1.orderSize);
-        Sem_wait(&mutex);
+        pthread_mutex_lock(   & mutex  ) ;
         remainsToMake = orderSize;
-        Sem_post(&mutex);
+        pthread_mutex_unlock(   & mutex  ) ;
 
         msgBuf msg2; //idk if i make a new msg or just replace the old one?
         msg2.numFac = htonl(N);
@@ -181,15 +207,35 @@ int main( int argc , char *argv[] )
         of sub-factories that will manufacture the requested order. 
         For this project, N is always = 1. The server initializes the remainsToMake to be the same as the  orderSize.
         */
+       srand(time(NULL));
+
        for(int i = 0; i < N; i++){
             int factory_num = i+1;
             //TODO:
-            //int factory_cap = Maximum Capacity of items to make in one iteration (  10 <= Random <= 50 )
-            //int factory_duration = The duration ( 500 <= Random <= 1200 MILLISECONDS ) it takes the sub-factory thread in one iteration ( regardless of how many items it will actually make in an iteration)
-            // printf("Created factory thread # %d with capacity = %d parts & duration = %d mSec", factory id, capacity, duration);
+            int factory_cap = (rand() % 41) + 10;//Maximum Capacity of items to make in one iteration (  10 <= Random <= 50 )
+            int factory_duration = (rand() % 701) + 500;  //The duration ( 500 <= Random <= 1200 MILLISECONDS ) it takes the sub-factory thread in one iteration ( regardless of how many items it will actually make in an iteration)
+            pthread_t thrdID;
+            arg_t *arg = (arg_t *)malloc(sizeof(arg_t));
+            if (arg == NULL) { 
+                fprintf(stderr, "Failed to allocate memory\n"); 
+                exit(EXIT_FAILURE); 
+            } 
+            arg->id = factory_num;
+            arg->cap = factory_cap;
+            arg->dur = factory_duration;
+
+            pthread_mutex_lock(&factoryMutex);
+            numActiveFactories++;
+            pthread_mutex_unlock(&factoryMutex);
+
+            Pthread_create( &thrdID, NULL, (void *) subFactory, (void *) arg);
+            threadIDs[i] = thrdID;
+
             //create thread(subFactory(factory_num, factory_capacity, factory_duration));
             // subFactory( 1 , 50 , 350 ) ;  // Single factory, ID=1 , capacity=50, duration=350 ms
-       }
+        }
+
+        
         
         // ^ 
         /*
@@ -197,27 +243,90 @@ int main( int argc , char *argv[] )
         providing it with its FactoryID ( 1 for this PA ), its capacity (say 50 items), and the duration 
         in milliseconds to make that capacity (or part of) of items.
         */
+
+
+               // ***** FACTORY server summary report *************
+    
+
+    while ( 1 )
+    {
+        pthread_mutex_lock(   & factoryMutex  ) ;
+        if ( numActiveFactories == 0 )
+        {
+            pthread_mutex_unlock( & factoryMutex  ) ;
+            break ;
+        }            ;
+        pthread_mutex_unlock( & factoryMutex  ) ;
+        fflush(stdout);
+        sleep( 1 ) ;   //  try again after 1 seconds
+        
     }
+
+
+// Sub factory Parts Made Iterations
+    // 1             X       X
+    // 2             X       X
+    // 3             X       X
+    // 4             X       X
+    // =================================
+    // Grand total parts made = X vs order size X
+    // Order to completion time; X
+    printf("****** FACTORY Server Summary Report ******\n");
+    printf("   Sub-Factory        Parts Made        Iterations\n");
+    int total = 0;
+    result_t* factoryResult;
+    for(int i = 0; i < N; i++){
+        void* result;
+        Pthread_join(threadIDs[i], &result);
+
+        // Cast result back to arg_t* and store in threadResults
+        factoryResult = (result_t*)result;
+        printf("           %2d              %3d                %2d\n", factoryResult->id, factoryResult->partsMade, factoryResult->iterations);
+        total+=factoryResult->partsMade;
+    }
+    free(factoryResult);
+    printf("============================================\n");
+    printf("Grand total parts made   =   %3d  vs order size of %3d\n", total, orderSize);
+    printf("\nOrder-To-Completion time XXX.X milliSeconds\n");
+
+    fflush(stdout);
+
+    }
+
+
+    // free(threadIDs);
+    free(threadResults);
 
 
     return 0 ;
 }
 
-void subFactory( int factoryID , int myCapacity , int myDuration )
+void subFactory(void* arg )
 {
     char    strBuff[ MAXSTR ] ;   // snprint buffer
     int     partsImade = 0 , myIterations = 0 ;
     msgBuf  msg;
 
+    arg_t *p = (arg_t *) arg;
+    int factoryID = p->id;
+    int myCapacity = p->cap;
+    int myDuration = p->dur;
+
+    // Pthread_detach(  pthread_self() ) ;
+
+    printf("Created factory thread # %d with capacity = %d parts & duration = %d mSec\n", factoryID, myCapacity, myDuration);
+
     while ( 1 )
     {
         int make;
         // See if there are still any parts to manufacture
+        pthread_mutex_lock(   & mutex  ) ;
         if ( remainsToMake <= 0 )
             break ;   // Not anymore, exit the loop
 
         make = minimum(remainsToMake, myCapacity);
         remainsToMake -= make;
+        pthread_mutex_unlock(   & mutex  ) ;
         Usleep(myDuration*1000);// missing code goes here
 
         //After waking up, the sub-factory sends a  PRODUCTION_MSG message over UDP containing its 
@@ -242,6 +351,15 @@ void subFactory( int factoryID , int myCapacity , int myDuration )
 
     }
 
+    result_t* result = (result_t*)malloc(sizeof(result_t));
+    result->id = factoryID;
+    result->partsMade = partsImade;
+    result->iterations = myIterations;
+        pthread_mutex_unlock(   & mutex  ) ;
+        // threadResults[factoryID-1].id = factoryID;
+        // threadResults[factoryID-1].cap = partsImade;
+        // threadResults[factoryID-1].dur = myIterations; //TODO: make another struct and put this in there instead of being lazy
+
     // Send a Completion Message to Supervisor
     msg.purpose = htonl(COMPLETION_MSG);
     msg.facID = htonl(factoryID);
@@ -253,16 +371,14 @@ void subFactory( int factoryID , int myCapacity , int myDuration )
           , factoryID, partsImade, myIterations);
     factLog( strBuff ) ;
 
-    // ***** FACTORY server summary report *************
-    // Sub factory Parts Made Iterations
-    // 1             X       X
-    // 2             X       X
-    // 3             X       X
-    // 4             X       X
-    // =================================
-    // Grand total parts made = X vs order size X
-    // Order to completion time; X
-    
+
+    pthread_mutex_lock(   & factoryMutex  ) ;
+    numActiveFactories--;
+    pthread_mutex_unlock( & factoryMutex  ) ;
+
+    free(p);
+    pthread_exit((void*)result);
+    // pthread_exit( NULL ) ;
     
 }
 
