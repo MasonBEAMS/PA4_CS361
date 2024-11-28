@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <pthread.h>
+#include <sys/time.h>
 
 #include "wrappers.h"
 #include "message.h"
@@ -52,6 +53,9 @@ int   numActiveFactories = 0 , orderSize ;
 // sem_t mutex;
 pthread_mutex_t factoryMutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+struct timeval start;
+struct timeval end;
 
 
 int   sd ;      // Server socket descriptor
@@ -151,7 +155,7 @@ int main( int argc , char *argv[] )
     srvrSkt.sin_addr.s_addr = htonl(INADDR_ANY);
     srvrSkt.sin_port = htons(port);
 
-    printf("I will attempt to accept orders at port %d and use %d sub-factories.\n", port, N);
+    printf("I will attempt to accept orders at port %d and use %d sub-factories.\n\n", port, N);
 
     
     if ( bind( sd, (SA *) & srvrSkt , sizeof(srvrSkt) ) < 0 )
@@ -185,6 +189,7 @@ int main( int argc , char *argv[] )
         printf("\n\nFACTORY server received: " ) ;
         printMsg( & msg1 );  puts("");
         printf("\tFrom IP %s Port %d\n" , ipStr , ntohs( clntSkt.sin_port ) ) ;
+        gettimeofday(&start, NULL);
 
         // missing code goes here
         orderSize = ntohl(msg1.orderSize);
@@ -258,7 +263,7 @@ int main( int argc , char *argv[] )
         }            ;
         pthread_mutex_unlock( & factoryMutex  ) ;
         fflush(stdout);
-        sleep( 1 ) ;   //  try again after 1 seconds
+        Usleep( 1 ) ;   //  try again after 1 seconds
         
     }
 
@@ -270,8 +275,10 @@ int main( int argc , char *argv[] )
     // 4             X       X
     // =================================
     // Grand total parts made = X vs order size X
-    // Order to completion time; X
-    printf("****** FACTORY Server Summary Report ******\n");
+    // Order to completion time XXX.x
+    
+
+    printf("\n\n****** FACTORY Server Summary Report ******\n");
     printf("   Sub-Factory        Parts Made        Iterations\n");
     int total = 0;
     result_t* factoryResult;
@@ -285,9 +292,19 @@ int main( int argc , char *argv[] )
         total+=factoryResult->partsMade;
     }
     free(factoryResult);
-    printf("============================================\n");
+    printf("============================================================\n");
     printf("Grand total parts made   =   %3d  vs order size of %3d\n", total, orderSize);
-    printf("\nOrder-To-Completion time XXX.X milliSeconds\n");
+    gettimeofday(&end, NULL);
+    long secs = end.tv_sec - start.tv_sec;
+    long micros = end.tv_usec - start.tv_usec;
+
+    if (micros < 0) {
+        micros += 1000000;
+        secs--;
+    }
+
+    double total_time = secs * 1000.0 + micros / 1000.0;
+    printf("\nOrder-To-Completion time %.1f milliSeconds\n", total_time);
 
     fflush(stdout);
 
@@ -314,7 +331,7 @@ void subFactory(void* arg )
 
     // Pthread_detach(  pthread_self() ) ;
 
-    printf("Created factory thread # %d with capacity = %d parts & duration = %d mSec\n", factoryID, myCapacity, myDuration);
+    printf("Created Factory Thread #%3d with capacity =%4d parts & duration =%4d mSec\n", factoryID, myCapacity, myDuration);
 
     while ( 1 )
     {
@@ -341,7 +358,7 @@ void subFactory(void* arg )
 
         if (sendto(sd, &msg, sizeof(msg), 0, (SA *)&clntSkt, sizeof(clntSkt)) < 0)
             err_sys("sendto failed");
-        printf("Factory #%d produced  %d parts in %d milliseconds\n", factoryID, make, myDuration);
+        printf("Factory #%3d: Going to make %4d parts in %3d mSec\n", factoryID, make, myDuration);
 
 
         // missing code goes here
