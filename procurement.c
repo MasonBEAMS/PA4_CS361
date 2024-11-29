@@ -27,6 +27,15 @@
 
 typedef struct sockaddr SA ;
 
+typedef struct {
+    int id;
+    int partsMade;
+    int iterations;
+} result_t;
+
+struct timeval start;
+struct timeval end;
+
 /*-------------------------------------------------------*/
 int main( int argc , char *argv[] )
 {
@@ -39,7 +48,6 @@ int main( int argc , char *argv[] )
 
     char  *myName = "Mason Scofield + Zach Putz" ; 
     printf("\nPROCUREMENT: Started. Developed by %s\n\n" , myName );    
-
     char myUserName[30] ;
     getlogin_r ( myUserName , 30 ) ;
     time_t  now;
@@ -78,6 +86,7 @@ int main( int argc , char *argv[] )
       err_sys( "Invalid server IP address" ) ;
 
 
+    gettimeofday(&start, NULL);
 
     // Send the initial request to the Factory Server
     msgBuf  msg1;
@@ -109,11 +118,18 @@ int main( int argc , char *argv[] )
 
 
     numFactories = ntohl(msg2.numFac);
-    activeFactories =numFactories;
+    
+    result_t results[numFactories];
+    for (int i = 0; i < numFactories; i++) {
+        results[i].id = i;
+        results[i].partsMade = 0;
+        results[i].iterations = 0;
+    }
+    activeFactories = numFactories;
 
     msgBuf msg3;
     // Monitor all Active Factory Lines & Collect Production Reports
-    while ( 1 ) // wait for messages from sub-factories
+    while ( activeFactories > 0 ) // wait for messages from sub-factories
     {
     socklen_t alen3 = sizeof( srvSkt ) ;
         recvfrom(sd, &msg3 , sizeof(msg2) , 0 , (SA *) &srvSkt , &alen3);
@@ -122,16 +138,17 @@ int main( int argc , char *argv[] )
 
            totalItems += ntohl(msg3.partsMade);
            partsMade[1] += ntohl(msg3.partsMade);
-           activeFactories=0;    
            int numParts = ntohl(msg3.partsMade);
            int facnum = ntohl(msg3.facID);
            int dur = ntohl(msg3.duration);
            iterations++;
            totalnummade += ntohl(msg3.partsMade);
-           printf("Factory #%d produced %d parts in %d milliseconds\n", facnum, numParts, dur);
+           results[facnum-1].iterations += 1;
+           results[facnum-1].partsMade += numParts;
+           printf("PROCUREMENT: Factory #%d produced %d parts in %d milliSecs\n", facnum, numParts, dur);
         } else if( ntohl(msg3.purpose) == COMPLETION_MSG){
-            printf("Factory #%d        COMPLETED ITS TASK\n", ntohl(msg3.facID));
-            break;
+            printf("PROCUREMENT: Factory #%d        COMPLETED its task\n", ntohl(msg3.facID));
+            activeFactories--;
         } else if (ntohl(msg3.purpose) == PROTOCOL_ERR){
             printf("PROCUREMENT: Received invalid msg ");
             printMsg(&msg3); puts("");
@@ -143,12 +160,10 @@ int main( int argc , char *argv[] )
     // Print the summary report
     //totalItems  = 0 ;
     printf("\n\n****** PROCUREMENT Summary Report ******\n");
-
-    int totaliterations = 0;
-    int msg3facID = ntohl(msg3.facID);
+    printf("   Sub-Factory        Parts Made        Iterations\n");
     for (int i = 0; i < numFactories; i++){
-        printf("Factory # %d made a total of %d parts in %d iterations\n", msg3facID, totalnummade, iterations);
-        totaliterations += iters[msg3facID];
+                printf("           %2d              %3d                %2d\n", results[i].id+1, results[i].partsMade,  results[i].iterations);
+        // printf("Factory # %d made a total of %d parts in %d iterations\n", results[i].id+1, results[i].partsMade, results[i].iterations);
     }
     
 
@@ -157,6 +172,17 @@ int main( int argc , char *argv[] )
 
 
     printf("Grand total parts made =    %d   vs     order size of   %d \n", orderSize, totalnummade);
+    gettimeofday(&end, NULL);
+    long secs = end.tv_sec - start.tv_sec;
+    long micros = end.tv_usec - start.tv_usec;
+
+    if (micros < 0) {
+        micros += 1000000;
+        secs--;
+    }
+
+    double total_time = secs * 1000.0 + micros / 1000.0;
+    printf("\nOrder-To-Completion time %.1f milliSeconds\n", total_time);
 
 
     printf( "\n>>> Procurement Terminated\n");

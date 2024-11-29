@@ -75,7 +75,6 @@ typedef struct {
     int iterations;
 } result_t;
 
-arg_t *threadResults;
 
 
 //------------------------------------------------------------
@@ -168,8 +167,7 @@ int main( int argc , char *argv[] )
     pthread_t threadIDs[N];
 
     // threadIDs = malloc(N * sizeof(pthread_t));
-    threadResults = malloc(N * sizeof(arg_t));
-    if(threadIDs == NULL || threadResults == NULL) {
+    if(threadIDs == NULL) {
         fprintf(stderr, "Failed to allocate memory\n"); 
         exit(EXIT_FAILURE);  
     }
@@ -286,7 +284,6 @@ int main( int argc , char *argv[] )
         void* result;
         Pthread_join(threadIDs[i], &result);
 
-        // Cast result back to arg_t* and store in threadResults
         factoryResult = (result_t*)result;
         printf("           %2d              %3d                %2d\n", factoryResult->id, factoryResult->partsMade, factoryResult->iterations);
         total+=factoryResult->partsMade;
@@ -312,7 +309,6 @@ int main( int argc , char *argv[] )
 
 
     // free(threadIDs);
-    free(threadResults);
 
 
     return 0 ;
